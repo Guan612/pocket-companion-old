@@ -36,7 +36,26 @@ def lvgl_dir():
     return local
 
 
+# 控件开关跟着固件的 sdkconfig 走：模拟器能用的控件，设备上一定也开着
+WIDGETS = ["ANIMIMAGE", "ARC", "BAR", "BUTTON", "BUTTONMATRIX", "CALENDAR", "CANVAS", "CHART",
+           "CHECKBOX", "DROPDOWN", "IMAGE", "IMAGEBUTTON", "KEYBOARD", "LABEL", "LED", "LINE",
+           "LIST", "MENU", "MSGBOX", "ROLLER", "SCALE", "SLIDER", "SPAN", "SPINBOX", "SPINNER",
+           "SWITCH", "TABLE", "TABVIEW", "TEXTAREA", "TILEVIEW", "WIN"]
+
+
+def write_device_widgets():
+    sdkconfig = FIRMWARE / "build" / "config" / "sdkconfig.h"
+    if not sdkconfig.exists():
+        sys.exit("先编译一次固件，需要 firmware/build/config/sdkconfig.h 里的 LVGL 控件开关")
+    text = sdkconfig.read_text(encoding="utf-8")
+    lines = ["// 由 build.py 按固件的 sdkconfig.h 生成，不要手改"]
+    for w in WIDGETS:
+        lines.append(f"#define LV_USE_{w} {1 if f'#define CONFIG_LV_USE_{w} 1' in text else 0}")
+    (HERE / "lv_conf_device.h").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def main():
+    write_device_widgets()
     lvgl = lvgl_dir()
     sources = sorted(str(p) for p in (lvgl / "src").rglob("*.c"))
     sources += [str(HERE / "sim_main.c"), *(str(BOARD / f) for f in ("nomi_ui.c", "face.c", "raster.c"))]

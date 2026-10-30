@@ -11,6 +11,7 @@
 #include <cJSON.h>
 #include <esp_log.h>
 #include <esp_opus_dec.h>
+#include <esp_timer.h>
 
 #include <array>
 #include <cstring>
@@ -22,10 +23,48 @@ namespace {
 constexpr int kMicSampleRate = 16000;      // 小智上行 Opus 的采样率
 constexpr int kMicFrameMs = 60;            // 小智上行 Opus 的帧长
 constexpr int kEndSilenceMs = 900;         // 说完后静音多久算一句结束
+constexpr int kBargeInMs = 300;            // 它说话时用户开口多久算打断
 constexpr int kMaxRecordMs = 15000;
 constexpr size_t kHistoryLimit = 12;
 constexpr int kHttpTimeoutMs = 30000;
 constexpr const char* kSettingsNs = "directapi";
+constexpr const char* kDefaultImageQuestion = "你看到了什么？简单说说。";
+
+// 拍照后暂存的 JPEG，取用一次就清掉
+std::mutex g_image_mutex;
+std::string g_pending_image;
+
+std::string TakePendingImage() {
+    std::lock_guard<std::mutex> lock(g_image_mutex);
+    return std::exchange(g_pending_image, std::string());
+}
+
+bool HasPendingImage() {
+    std::lock_guard<std::mutex> lock(g_image_mutex);
+    return !g_pending_image.empty();
+}
+
+std::string Base64(const std::string& data) {
+    static const char kTable[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve((data.size() + 2) / 3 * 4);
+    size_t i = 0;
+    for (; i + 2 < data.size(); i += 3) {
+        uint32_t v = (uint8_t)data[i] << 16 | (uint8_t)data[i + 1] << 8 | (uint8_t)data[i + 2];
+        out += kTable[v >> 18];
+        out += kTable[(v >> 12) & 63];
+        out += kTable[(v >> 6) & 63];
+        out += kTable[v & 63];
+    }
+    if (i < data.size()) {
+        uint32_t v = (uint8_t)data[i] << 16 | (i + 1 < data.size() ? (uint8_t)data[i + 1] << 8 : 0);
+        out += kTable[v >> 18];
+        out += kTable[(v >> 12) & 63];
+        out += i + 1 < data.size() ? kTable[(v >> 6) & 63] : '=';
+        out += '=';
+    }
+    return out;
+}
 constexpr const char* kDefaultPrompt =
     "你是一个放在桌面上的小伙伴，用口语化的中文回答，每次不超过三句话，不要用 markdown。"
     "回答开头必须带一个情绪标签，只能是 [happy]、[neutral]、[confused] 之一，"
@@ -220,6 +259,16 @@ bool DirectApiProtocol::IsAudioChannelOpened() const { return opened_ && !error_
 
 bool DirectApiProtocol::SendAudio(std::unique_ptr<AudioStreamPacket> packet) {
     if (!recording_) {
+        // 随时打断：回声消除打开时，它说话期间麦克风也一直在送音频；
+        // 设备端 VAD 听到用户开口超过一小会儿，就停掉这一轮，Application 会切回聆听
+        if (busy_ && mode_ == kListeningModeRealtime) {
+            bool voice = Application::GetInstance().GetAudioService().IsVoiceDetected();
+            barge_in_ms_ = voice ? barge_in_ms_ + kMicFrameMs : 0;
+            if (barge_in_ms_ >= kBargeInMs && !cancel_) {
+                ESP_LOGI(TAG, "Barge-in detected");
+                cancel_ = true;
+            }
+        }
         return true;
     }
     bool done = false;
@@ -302,6 +351,7 @@ void DirectApiProtocol::WorkerLoop() {
         }
         busy_ = true;
         cancel_ = false;
+        barge_in_ms_ = 0;
         RunTurn(std::move(packets));
         busy_ = false;
     }
@@ -333,6 +383,9 @@ void DirectApiProtocol::RunTurn(std::vector<std::vector<uint8_t>> packets) {
     std::string text = Transcribe(cfg, packets);
     packets.clear();
     if (cancel_) return;
+    if (text.empty() && HasPendingImage()) {
+        text = kDefaultImageQuestion;  // 拍了照但没说话
+    }
     if (text.empty()) {
         resume();
         return;
@@ -426,7 +479,28 @@ std::string DirectApiProtocol::Chat(const DirectApiConfig& cfg, const std::strin
         cJSON_AddItemToArray(messages, m);
     };
     add("system", cfg.system_prompt);
-    for (const auto& [role, content] : history_) add(role, content);
+    // 历史只存文字；这一轮如果拍了照，用户消息改成"文字 + 图片"的多模态格式
+    std::string image = TakePendingImage();
+    for (size_t i = 0; i < history_.size(); i++) {
+        if (i + 1 < history_.size() || image.empty()) {
+            add(history_[i].first, history_[i].second);
+            continue;
+        }
+        cJSON* m = cJSON_CreateObject();
+        cJSON_AddStringToObject(m, "role", "user");
+        cJSON* parts = cJSON_AddArrayToObject(m, "content");
+        cJSON* text_part = cJSON_CreateObject();
+        cJSON_AddStringToObject(text_part, "type", "text");
+        cJSON_AddStringToObject(text_part, "text", history_[i].second.c_str());
+        cJSON_AddItemToArray(parts, text_part);
+        cJSON* image_part = cJSON_CreateObject();
+        cJSON_AddStringToObject(image_part, "type", "image_url");
+        cJSON* url = cJSON_AddObjectToObject(image_part, "image_url");
+        cJSON_AddStringToObject(url, "url", ("data:image/jpeg;base64," + Base64(image)).c_str());
+        cJSON_AddItemToArray(parts, image_part);
+        cJSON_AddItemToArray(messages, m);
+        ESP_LOGI(TAG, "Sending image (%u bytes JPEG) with question", (unsigned)image.size());
+    }
     char* json = cJSON_PrintUnformatted(req);
     cJSON_Delete(req);
 
@@ -527,4 +601,59 @@ bool DirectApiProtocol::Speak(const DirectApiConfig& cfg, const std::string& sen
         last_incoming_time_ = std::chrono::steady_clock::now();
     }
     return !cancel_;
+}
+
+// 发请求并返回 HTTP 状态码；连不上返回 0
+static int PostStatus(Http& http, const std::string& url) {
+    if (!http.Open("POST", url)) return 0;
+    auto status = http.GetStatusCode();
+    return status ? *status : 0;
+}
+
+void DirectApiProtocol::AttachImage(std::string jpeg) {
+    std::lock_guard<std::mutex> lock(g_image_mutex);
+    g_pending_image = std::move(jpeg);
+}
+
+std::string DirectApiProtocol::SelfTest() {
+    auto cfg = DirectApiConfig::Load();
+    if (!cfg.IsComplete()) {
+        return "还没配置 API，请先在网页设置页填写";
+    }
+    auto describe = [](int status) {
+        return status == 0 ? std::string("连不上") : "HTTP " + std::to_string(status);
+    };
+
+    // 大模型：发一句最短的话
+    std::string report;
+    {
+        int64_t start = esp_timer_get_time();
+        auto http = NewHttp(cfg.llm.key);
+        http->SetHeader("Content-Type", "application/json");
+        http->SetContent("{\"model\":\"" + cfg.llm.model +
+                         "\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"你好\"}]}");
+        int status = PostStatus(*http, cfg.llm.url + "/chat/completions");
+        int ms = static_cast<int>((esp_timer_get_time() - start) / 1000);
+        report = status >= 200 && status < 300
+                     ? "大模型：正常（" + std::to_string(ms) + " ms）"
+                     : "大模型：" + describe(status) + "，检查地址 / Key / 模型";
+    }
+
+    // 语音合成：看服务能不能返回 Ogg Opus
+    {
+        auto http = NewHttp(cfg.tts.key);
+        http->SetHeader("Content-Type", "application/json");
+        http->SetContent("{\"model\":\"" + cfg.tts.model + "\",\"input\":\"测试\",\"voice\":\"" +
+                         cfg.tts_voice + "\",\"response_format\":\"opus\"}");
+        int status = PostStatus(*http, cfg.tts.url + "/audio/speech");
+        if (status < 200 || status >= 300) {
+            report += "\n语音合成：" + describe(status) + "，检查地址 / Key / 模型 / 音色";
+        } else {
+            char head[4] = {};
+            auto n = http->Read(head, sizeof(head));
+            bool ogg = n && *n == 4 && memcmp(head, "OggS", 4) == 0;
+            report += ogg ? "\n语音合成：正常，支持 opus" : "\n语音合成：返回的不是 opus，换支持 opus 的服务";
+        }
+    }
+    return report;
 }

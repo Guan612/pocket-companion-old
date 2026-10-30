@@ -1,10 +1,15 @@
 #include "adc_battery_monitor.h"
 #include "application.h"
 #include "button.h"
+#include "codecs/box_audio_codec.h"
 #include "codecs/es8311_audio_codec.h"
 #include "config.h"
 #include "mcp_server.h"
 #include "esp32_camera.h"
+#include "image_to_jpeg.h"
+#if CONFIG_DIRECT_API
+#include "direct_api_protocol.h"
+#endif
 #include "nomi_display.h"
 #include "power_save_timer.h"
 #include "wifi_board.h"
@@ -14,6 +19,8 @@
 #include <esp_lcd_panel_io.h>
 #include <esp_lcd_panel_ops.h>
 #include <esp_lcd_st7796.h>
+#include <esp_camera.h>
+#include <esp_heap_caps.h>
 #include <esp_lcd_touch_gt911.h>
 #include <esp_log.h>
 #include <esp_lvgl_port.h>
@@ -142,9 +149,11 @@ private:
         });
     }
 
-    // cpu_max_freq 传 -1：休眠时不降频，唤醒词保持监听
-    void InitializePowerSave() {
-        power_save_timer_ = new PowerSaveTimer(-1, IDLE_SECONDS_TO_DIM, IDLE_SECONDS_TO_OFF);
+    // cpu_max_freq 传 -1：休眠时不降频，唤醒词保持监听。时间按设置页的选项，-1 表示从不
+    void CreatePowerSaveTimer() {
+        int dim_seconds, off_seconds;
+        NomiDisplay::GetIdleSeconds(dim_seconds, off_seconds);
+        power_save_timer_ = new PowerSaveTimer(-1, dim_seconds, off_seconds);
         power_save_timer_->OnEnterSleepMode([this]() {
             display_->SetSleep(true);
             GetBacklight()->SetBrightness(DIM_BRIGHTNESS);
@@ -156,7 +165,19 @@ private:
         // 到点只息屏，不真关机（这块板没有软关机电路）
         power_save_timer_->OnShutdownRequest([this]() { GetBacklight()->SetBrightness(0); });
         power_save_timer_->SetEnabled(true);
+    }
+
+    void InitializePowerSave() {
+        CreatePowerSaveTimer();
         NomiDisplay::on_user_activity = [this]() { power_save_timer_->WakeUp(); };
+        // 设置页改了时间就换一个计时器；在主循环里换，避免和其他调用撞上
+        NomiDisplay::on_power_timing_changed = [this]() {
+            Application::GetInstance().Schedule([this]() {
+                PowerSaveTimer* old = power_save_timer_;
+                CreatePowerSaveTimer();
+                delete old;
+            });
+        };
     }
 
     void InitializeCamera() {
@@ -182,19 +203,59 @@ private:
         config.ledc_timer = LEDC_TIMER_1;  // 0 号被背光 PWM 占了
         config.ledc_channel = LEDC_CHANNEL_1;
         config.pixel_format = PIXFORMAT_RGB565;
-        config.frame_size = FRAMESIZE_QVGA;
+        config.frame_size = FRAMESIZE_VGA;  // 640×480，识图够清楚，JPEG 约几十 KB
         config.jpeg_quality = 12;
-        config.fb_count = 1;
+        config.fb_count = 2;  // Capture() 会占住一帧做预览，另一帧给大模型
         config.fb_location = CAMERA_FB_IN_PSRAM;
         config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
         camera_ = new Esp32Camera(config);
 
+        // 拍一张给大模型看：屏幕先预览拍到的画面，然后开始聆听，用户说出问题后图文一起发出去
         NomiDisplay::on_take_photo = [this]() {
             power_save_timer_->WakeUp();
             if (!camera_->Capture()) {
                 display_->ShowNotification("拍照失败，检查摄像头排线", 4000);
+                return;
             }
+#if CONFIG_DIRECT_API
+            std::string jpeg = CaptureJpeg();
+            if (jpeg.empty()) {
+                display_->ShowNotification("照片编码失败", 4000);
+                return;
+            }
+            DirectApiProtocol::AttachImage(std::move(jpeg));
+            display_->ShowNotification("拍好了，说出你的问题", 3000);
+            auto& app = Application::GetInstance();
+            if (app.GetDeviceState() == kDeviceStateIdle) {
+                app.ToggleChatState();
+            }
+#endif
         };
+    }
+
+    // 另取一帧 RGB565 转成 JPEG。摄像头输出是大端 RGB565，编码器要小端，先换字节
+    std::string CaptureJpeg() {
+        camera_fb_t* fb = esp_camera_fb_get();
+        if (fb == nullptr) return "";
+        std::string jpeg;
+        if (fb->format == PIXFORMAT_RGB565) {
+            size_t pixels = fb->width * fb->height;
+            auto* buf = static_cast<uint16_t*>(heap_caps_malloc(pixels * 2, MALLOC_CAP_SPIRAM));
+            if (buf != nullptr) {
+                auto* src = reinterpret_cast<const uint16_t*>(fb->buf);
+                for (size_t i = 0; i < pixels; i++) buf[i] = __builtin_bswap16(src[i]);
+                uint8_t* out = nullptr;
+                size_t out_len = 0;
+                if (image_to_jpeg(reinterpret_cast<uint8_t*>(buf), pixels * 2, fb->width,
+                                  fb->height, V4L2_PIX_FMT_RGB565, 80, &out, &out_len)) {
+                    jpeg.assign(reinterpret_cast<char*>(out), out_len);
+                    free(out);
+                }
+                heap_caps_free(buf);
+            }
+        }
+        esp_camera_fb_return(fb);
+        return jpeg;
     }
 
     void InitializeButtons() {
@@ -234,12 +295,28 @@ public:
         GetBacklight()->RestoreBrightness();
     }
 
+    // 焊了 ES7210 的版本由它录音：双麦克风 + 喇叭回采（MIC3），能做设备端回声消除；
+    // 没焊就用 ES8311 自带的麦克风输入。两颗芯片的录音输出共用 GPIO10，板上只会焊其中一路
+    AudioCodec* CreateAudioCodec() {
+        if (i2c_master_probe(i2c_bus_, AUDIO_CODEC_ES7210_ADDR >> 1, 100) == ESP_OK) {
+            ESP_LOGI(TAG, "ES7210 found, using dual-mic input with AEC reference");
+            NomiDisplay::aec_supported = true;
+            return new BoxAudioCodec(i2c_bus_, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
+                                     AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS,
+                                     AUDIO_I2S_GPIO_DOUT, AUDIO_I2S_GPIO_DIN, AUDIO_CODEC_PA_PIN,
+                                     AUDIO_CODEC_ES8311_ADDR, AUDIO_CODEC_ES7210_ADDR, true);
+        }
+        ESP_LOGI(TAG, "ES7210 not found, using ES8311 microphone");
+        return new Es8311AudioCodec(i2c_bus_, I2C_NUM_0, AUDIO_INPUT_SAMPLE_RATE,
+                                    AUDIO_OUTPUT_SAMPLE_RATE, AUDIO_I2S_GPIO_MCLK,
+                                    AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT,
+                                    AUDIO_I2S_GPIO_DIN, AUDIO_CODEC_PA_PIN,
+                                    AUDIO_CODEC_ES8311_ADDR, true, false);
+    }
+
     virtual AudioCodec* GetAudioCodec() override {
-        static Es8311AudioCodec audio_codec(
-            i2c_bus_, I2C_NUM_0, AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
-            AUDIO_I2S_GPIO_MCLK, AUDIO_I2S_GPIO_BCLK, AUDIO_I2S_GPIO_WS, AUDIO_I2S_GPIO_DOUT,
-            AUDIO_I2S_GPIO_DIN, AUDIO_CODEC_PA_PIN, AUDIO_CODEC_ES8311_ADDR, true, false);
-        return &audio_codec;
+        static AudioCodec* codec = CreateAudioCodec();
+        return codec;
     }
 
     virtual Display* GetDisplay() override { return display_; }

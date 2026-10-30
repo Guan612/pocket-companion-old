@@ -26,9 +26,14 @@ public:
 
     // 由板子的休眠计时器调用
     void SetSleep(bool sleeping);
-    // 触摸时回调（板子用来重置休眠计时）；拍照入口，不设则菜单里不显示
-    static std::function<void()> on_user_activity;
-    static std::function<void()> on_take_photo;
+    // 以下由板子设置
+    static bool aec_supported;                          // 有没有喇叭回采（焊了 ES7210）
+    static std::function<void()> on_user_activity;      // 触摸时，用来重置休眠计时
+    static std::function<void()> on_take_photo;         // 设置页里点"拍照"
+    static std::function<void()> on_power_timing_changed;  // 设置页里改了调暗 / 息屏时间
+
+    // 设置页里选的调暗 / 息屏时间（秒），-1 表示从不
+    static void GetIdleSeconds(int& dim_seconds, int& off_seconds);
 
 private:
     uint16_t* face_buf_ = nullptr;

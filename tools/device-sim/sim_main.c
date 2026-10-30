@@ -5,6 +5,7 @@
 // 用来看整套交互；真正的 API 调用只在设备上跑。
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "cbin_font.h"
 #include "face.h"
@@ -27,12 +28,14 @@ static uint32_t s_ms;
 typedef enum { PHASE_IDLE, PHASE_LISTEN, PHASE_THINK, PHASE_SAY1, PHASE_SAY2, PHASE_DONE } phase_t;
 
 static phase_t s_phase = PHASE_IDLE;
+static bool s_photo;  // 这一轮带了照片
 static uint32_t s_phase_at;
 static int s_volume = 70, s_brightness = 80;
 
-// 休眠：和设备一样空闲 60 秒闭眼调暗，5 分钟息屏
-#define IDLE_TO_DIM_MS 60000
-#define IDLE_TO_OFF_MS 300000
+// 设置项存在内存里，刷新页面就没了
+static int s_chat_mode, s_aec, s_subtitles = 1, s_persona, s_voice = 4, s_dim = 1, s_off = 1;
+
+// 休眠：时间按设置页的选项，默认 1 分钟闭眼调暗、5 分钟息屏
 #define DIM_BRIGHTNESS 5
 static uint32_t s_last_activity;
 static int s_sleep_level;  // 0 醒着，1 调暗，2 息屏
@@ -66,16 +69,18 @@ static void enter(phase_t phase)
         break;
     case PHASE_THINK:
         nomi_ui_set_status("思考中…");
-        nomi_ui_set_subtitle("user", "今天适合出去走走吗？");
+        nomi_ui_set_subtitle("user", s_photo ? "这是什么植物？" : "今天适合出去走走吗？");
         nomi_ui_set_emotion("thinking");
         break;
     case PHASE_SAY1:
         nomi_ui_set_status("说话中…");
         nomi_ui_set_emotion("happy");
-        nomi_ui_set_subtitle("assistant", "当然适合！外面阳光正好，气温也舒服。");
+        nomi_ui_set_subtitle("assistant", s_photo ? "这是一盆绿萝，叶子很精神，看得出你照顾得不错。"
+                                                  : "当然适合！外面阳光正好，气温也舒服。");
         break;
     case PHASE_SAY2:
-        nomi_ui_set_subtitle("assistant", "记得带瓶水，傍晚可能会起风哦。");
+        nomi_ui_set_subtitle("assistant", s_photo ? "它喜欢散射光，一周浇一次水就够了。"
+                                                  : "记得带瓶水，傍晚可能会起风哦。");
         break;
     case PHASE_DONE:
         nomi_ui_set_status("待机");
@@ -88,10 +93,11 @@ static void advance(void)
 {
     if (s_phase != PHASE_IDLE) {
         s_last_activity = s_ms;  // 对话中不算空闲
-    } else if (s_sleep_level == 0 && s_ms - s_last_activity > IDLE_TO_DIM_MS) {
-        sleep_now();
-    } else if (s_sleep_level == 1 && s_ms - s_last_activity > IDLE_TO_OFF_MS) {
-        s_sleep_level = 2;
+    } else {
+        static const int dim_s[] = NOMI_DIM_SECONDS, off_s[] = NOMI_OFF_SECONDS;
+        uint32_t idle = s_ms - s_last_activity;
+        if (s_sleep_level == 0 && dim_s[s_dim] > 0 && idle > (uint32_t)dim_s[s_dim] * 1000) sleep_now();
+        else if (s_sleep_level == 1 && off_s[s_off] > 0 && idle > (uint32_t)off_s[s_off] * 1000) s_sleep_level = 2;
     }
     uint32_t t = s_ms - s_phase_at;
     if (s_phase == PHASE_LISTEN && t > 4000) enter(PHASE_THINK);
@@ -101,6 +107,7 @@ static void advance(void)
     else if (s_phase == PHASE_DONE && t > 3000) {
         nomi_ui_set_subtitle(NULL, NULL);
         s_phase = PHASE_IDLE;
+        s_photo = false;
     }
 }
 
@@ -122,14 +129,66 @@ static void toggle_chat(void)
     else enter(PHASE_IDLE);
 }
 
-static void set_volume(int v, bool final) { (void)final; s_volume = v; }
-static void set_brightness(int v, bool final) { (void)final; s_brightness = v; }
-static int get_volume(void) { return s_volume; }
-static int get_brightness(void) { return s_brightness; }
-static void reconfigure_wifi(void) { nomi_ui_notify("（模拟）设备重启进入配网模式", 4000); }
-static const char *get_config_url(void) { return "http://192.168.1.88/"; }
-static const char *get_about(void) { return "Pocket Companion · 模拟器（LVGL 9.5）"; }
-static void take_photo(void) { nomi_ui_notify("（模拟）拍照，真机上会在屏幕上显示照片", 3000); }
+static int get_int(const char *key, int def)
+{
+    if (!strcmp(key, NOMI_KEY_VOLUME)) return s_volume;
+    if (!strcmp(key, NOMI_KEY_BRIGHTNESS)) return s_brightness;
+    if (!strcmp(key, NOMI_KEY_CHAT_MODE)) return s_chat_mode;
+    if (!strcmp(key, NOMI_KEY_AEC)) return s_aec;
+    if (!strcmp(key, NOMI_KEY_AEC_SUPPORTED)) return 1;
+    if (!strcmp(key, NOMI_KEY_SUBTITLES)) return s_subtitles;
+    if (!strcmp(key, NOMI_KEY_PERSONA)) return s_persona;
+    if (!strcmp(key, NOMI_KEY_VOICE)) return s_voice;
+    if (!strcmp(key, NOMI_KEY_DIM)) return s_dim;
+    if (!strcmp(key, NOMI_KEY_OFF)) return s_off;
+    return def;
+}
+
+static void set_int(const char *key, int value, bool final)
+{
+    (void)final;
+    if (!strcmp(key, NOMI_KEY_VOLUME)) s_volume = value;
+    else if (!strcmp(key, NOMI_KEY_BRIGHTNESS)) s_brightness = value;
+    else if (!strcmp(key, NOMI_KEY_CHAT_MODE)) s_chat_mode = value;
+    else if (!strcmp(key, NOMI_KEY_AEC)) s_aec = value;
+    else if (!strcmp(key, NOMI_KEY_SUBTITLES)) s_subtitles = value;
+    else if (!strcmp(key, NOMI_KEY_PERSONA)) s_persona = value;
+    else if (!strcmp(key, NOMI_KEY_VOICE)) s_voice = value;
+    else if (!strcmp(key, NOMI_KEY_DIM)) s_dim = value;
+    else if (!strcmp(key, NOMI_KEY_OFF)) s_off = value;
+}
+
+static const char *get_text(const char *key)
+{
+    if (!strcmp(key, "personas")) return "桌面小伙伴\n毒舌损友\n学习助手\n英语陪练";
+    if (!strcmp(key, "voices")) return "alloy\necho\nfable\nonyx\nnova\nshimmer";
+    if (!strcmp(key, "wifi")) return "Home-5G（模拟）";
+    if (!strcmp(key, "ip")) return "192.168.1.88";
+    if (!strcmp(key, "config_url")) return "http://192.168.1.88/";
+    if (!strcmp(key, "version")) return "Pocket Companion 模拟器（LVGL 9.5）";
+    return "";
+}
+
+static void action(const char *name)
+{
+    if (!strcmp(name, "take_photo")) {
+        // 真机上会先在屏幕上预览拍到的画面，再开始聆听；问题和照片一起发给大模型
+        s_photo = true;
+        nomi_ui_notify("（模拟）拍好了，说出你的问题", 3000);
+        wake();
+        enter(PHASE_LISTEN);
+    }
+    else if (!strcmp(name, "test_api")) nomi_ui_notify("（模拟）大模型正常 · 语音合成支持 opus", 4000);
+    else if (!strcmp(name, "reconfigure_wifi")) nomi_ui_notify("（模拟）设备重启进入配网模式", 4000);
+    else if (!strcmp(name, "factory_reset")) nomi_ui_notify("（模拟）已恢复出厂设置，设备重启", 4000);
+}
+
+// 按住说话：按下开始聆听，松开进入思考
+static void start_listening(void) { wake(); enter(PHASE_LISTEN); }
+static void stop_listening(void)
+{
+    if (s_phase == PHASE_LISTEN) enter(PHASE_THINK);
+}
 
 /* ---------- LVGL 驱动 ---------- */
 
@@ -185,15 +244,13 @@ void sim_init(uint32_t ms)
     static const nomi_ui_callbacks_t callbacks = {
         .get_state = get_state,
         .toggle_chat = toggle_chat,
-        .set_volume = set_volume,
-        .set_brightness = set_brightness,
-        .reconfigure_wifi = reconfigure_wifi,
-        .get_volume = get_volume,
-        .get_brightness = get_brightness,
-        .get_config_url = get_config_url,
-        .get_about = get_about,
+        .start_listening = start_listening,
+        .stop_listening = stop_listening,
         .user_activity = wake,
-        .take_photo = take_photo,
+        .get_int = get_int,
+        .set_int = set_int,
+        .get_text = get_text,
+        .action = action,
     };
     // 没拿到小智字体时退回 LVGL 自带的中文子集（缺字较多）
     const lv_font_t *font = s_font_bin ? cbin_font_create(s_font_bin) : NULL;

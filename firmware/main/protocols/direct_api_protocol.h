@@ -53,6 +53,12 @@ public:
     void SendAbortSpeaking(AbortReason reason) override;
     void SendMcpMessage(const std::string& message) override;
 
+    // 用当前配置试调一次大模型和语音合成，返回给人看的结果（会阻塞几秒）
+    static std::string SelfTest();
+
+    // 附上一张 JPEG，下一轮提问时和问题一起发给大模型（多模态）；没说话就默认问看到了什么
+    static void AttachImage(std::string jpeg);
+
 protected:
     bool SendText(const std::string& text) override;
 
@@ -69,6 +75,7 @@ private:
     bool heard_voice_ = false;
     int silence_ms_ = 0;
     int recorded_ms_ = 0;
+    int barge_in_ms_ = 0;  // 它说话时用户连续开口多久了（随时打断模式）
 
     std::vector<std::pair<std::string, std::string>> history_;  // role, content
     SemaphoreHandle_t turn_sem_ = nullptr;

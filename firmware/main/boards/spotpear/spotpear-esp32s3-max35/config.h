@@ -20,6 +20,8 @@
 #define AUDIO_CODEC_I2C_SDA_PIN GPIO_NUM_15
 #define AUDIO_CODEC_I2C_SCL_PIN GPIO_NUM_14
 #define AUDIO_CODEC_ES8311_ADDR ES8311_CODEC_DEFAULT_ADDR
+// ES7210（"语音打断 IC"）：MIC1/MIC2 两个麦克风，MIC3 接喇叭回采；AD0/AD1 下拉，地址 0x40
+#define AUDIO_CODEC_ES7210_ADDR ES7210_CODEC_DEFAULT_ADDR
 
 #define BUILTIN_LED_GPIO        GPIO_NUM_NC
 #define BOOT_BUTTON_GPIO        GPIO_NUM_0
@@ -66,9 +68,7 @@
 #define BATTERY_LOWER_RESISTOR  100000
 #define BATTERY_USB_DETECT_PIN  GPIO_NUM_7
 
-// 休眠：空闲 60 秒调暗并闭眼，5 分钟息屏；唤醒词一直开着
-#define IDLE_SECONDS_TO_DIM     60
-#define IDLE_SECONDS_TO_OFF     300
+// 休眠：调暗时的亮度。多久后调暗 / 息屏在设置页里选（默认 1 分钟 / 5 分钟）
 #define DIM_BRIGHTNESS          5
 
 // 摄像头（OV2640 / GC0308，DVP 8 位）。SCCB 复用上面的 I2C 总线；PWDN、RESET 板上已固定
