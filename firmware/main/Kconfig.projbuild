@@ -649,6 +649,14 @@ choice BOARD_TYPE
         depends on IDF_TARGET_ESP32S3
 endchoice
 
+config DIRECT_API
+    bool "Talk to OpenAI-compatible APIs directly (no XiaoZhi server)"
+    default y if BOARD_TYPE_SPOTPEAR_ESP32S3_MAX35
+    default n
+    help
+        设备直接调用 OpenAI 兼容的 ASR / LLM / TTS 接口，不连小智服务器，
+        也跳过官方激活和 OTA。API 在设备的网页设置页里填写。
+
 choice XIAOZHI_NETWORK_TYPE
     prompt "Network Type"
     depends on BOARD_TYPE_WAVESHARE_ESP32_P4_NANO
