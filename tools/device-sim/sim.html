@@ -21,7 +21,7 @@ kbd{background:var(--card);border:1px solid #2c3040;border-radius:4px;padding:0 
 <body>
 <h1>设备模拟器 · 480×320</h1>
 <p>运行的是固件里同一份界面代码（nomi_ui.c、face.c，LVGL 9.5，小智的中文字体），鼠标当触摸。
-点一下屏幕开始说话，再点一下结束；长按屏幕打开设置菜单；右边圆钮或 <kbd>空格</kbd> 是 BOOT 键。
+点一下屏幕开始说话，再点一下结束；长按屏幕打开设置菜单；右边圆钮或 <kbd>空格</kbd> 是 BOOT 键。空闲 60 秒会闭眼调暗（按 <kbd>Z</kbd> 立刻睡着），点屏幕唤醒。
 对话内容是模拟的，真正调 API 只在设备上。</p>
 <div class="device">
   <canvas id="lcd" width="480" height="320"></canvas>
@@ -61,7 +61,10 @@ kbd{background:var(--card);border:1px solid #2c3040;border-radius:4px;padding:0 
     cv.addEventListener('pointerup',ev=>{down=false;point(ev,0)});
     cv.addEventListener('contextmenu',ev=>ev.preventDefault());
     document.getElementById('boot').onclick=()=>e.sim_boot_button();
-    addEventListener('keydown',ev=>{if(ev.code==='Space'){ev.preventDefault();e.sim_boot_button()}});
+    addEventListener('keydown',ev=>{
+      if(ev.code==='Space'){ev.preventDefault();e.sim_boot_button()}
+      if(ev.code==='KeyZ')e.sim_force_sleep();  // 不用干等 60 秒
+    });
 
     let frames=0,area=0;
     const loop=()=>{
@@ -76,7 +79,7 @@ kbd{background:var(--card);border:1px solid #2c3040;border-radius:4px;padding:0 
         ctx.putImageData(img,0,0,x0,y0,x1-x0,y1-y0);
         e.sim_clear_dirty();
       }
-      cv.style.filter=`brightness(${e.sim_brightness()/100})`;  // 背光
+      cv.style.filter=`brightness(${Math.max(e.sim_brightness(),0)/100})`;  // 背光，息屏时为 0
       if(frames%30===0){
         stats.textContent=`音量 ${e.sim_volume()}　亮度 ${e.sim_brightness()}　平均每帧刷新 ${(area/frames*100).toFixed(1)}% 屏幕`;
       }

@@ -18,13 +18,14 @@
 static nomi_ui_callbacks_t s_cb;
 static const lv_font_t *s_font;
 static uint16_t *s_buf;
-static lv_obj_t *s_canvas, *s_status, *s_subtitle, *s_toast, *s_menu;
+static lv_obj_t *s_canvas, *s_status, *s_battery, *s_subtitle, *s_toast, *s_menu;
 static lv_obj_t *s_volume_slider, *s_brightness_slider, *s_wifi_label;
 static lv_timer_t *s_toast_timer;
 static uint32_t s_last_ms, s_emotion_until;
 static float s_acc;
 static face_mode_t s_emotion_mode = FACE_IDLE;
 static bool s_wifi_armed;  // 重新配网要点两次确认
+static bool s_sleeping;
 
 /* ---------- 表情 ---------- */
 
@@ -84,6 +85,8 @@ void nomi_ui_set_emotion(const char *emotion)
     s_emotion_until = lv_tick_get() + EMOTION_HOLD_MS;
 }
 
+static void close_menu(void);
+
 /* ---------- 文字 ---------- */
 
 static void set_text_style(lv_obj_t *obj, uint32_t color)
@@ -119,6 +122,34 @@ void nomi_ui_set_subtitle(const char *role, const char *text)
     lv_obj_set_style_text_color(s_subtitle, lv_color_hex(from_user ? C_MUTED : C_TEXT), 0);
     lv_label_set_text(s_subtitle, text);
     lv_obj_remove_flag(s_subtitle, LV_OBJ_FLAG_HIDDEN);
+}
+
+void nomi_ui_set_battery(int level, bool charging)
+{
+    if (level < 0) {
+        lv_obj_add_flag(s_battery, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    const char *icon = level >= 90 ? LV_SYMBOL_BATTERY_FULL
+                     : level >= 65 ? LV_SYMBOL_BATTERY_3
+                     : level >= 40 ? LV_SYMBOL_BATTERY_2
+                     : level >= 15 ? LV_SYMBOL_BATTERY_1
+                                   : LV_SYMBOL_BATTERY_EMPTY;
+    lv_label_set_text_fmt(s_battery, "%s%s %d%%", charging ? LV_SYMBOL_CHARGE " " : "", icon, level);
+    // 低电量且没在充电时标红
+    lv_obj_set_style_text_color(s_battery,
+                                lv_color_hex(level < 15 && !charging ? 0xff6b6b : C_MUTED), 0);
+    lv_obj_remove_flag(s_battery, LV_OBJ_FLAG_HIDDEN);
+}
+
+void nomi_ui_set_sleep(bool sleeping)
+{
+    s_sleeping = sleeping;
+    face_set_sleep(sleeping);
+    if (sleeping) {
+        lv_obj_add_flag(s_subtitle, LV_OBJ_FLAG_HIDDEN);
+        close_menu();
+    }
 }
 
 static void hide_toast(lv_timer_t *timer)
@@ -175,7 +206,7 @@ static void on_slider(lv_event_t *e)
     if (slider == s_brightness_slider && s_cb.set_brightness) s_cb.set_brightness(value, final);
 }
 
-enum { BTN_CONFIG_URL, BTN_WIFI, BTN_ABOUT, BTN_CLOSE };
+enum { BTN_CONFIG_URL, BTN_PHOTO, BTN_WIFI, BTN_ABOUT, BTN_CLOSE };
 
 static void on_menu_button(lv_event_t *e)
 {
@@ -192,6 +223,10 @@ static void on_menu_button(lv_event_t *e)
         nomi_ui_notify(text, 8000);
         break;
     }
+    case BTN_PHOTO:
+        close_menu();
+        if (s_cb.take_photo) s_cb.take_photo();
+        break;
     case BTN_WIFI:
         if (!s_wifi_armed) {
             s_wifi_armed = true;
@@ -286,6 +321,7 @@ static void build_menu(lv_obj_t *screen)
     lv_obj_set_style_pad_gap(buttons, 8, 0);
     lv_obj_set_style_pad_top(buttons, 8, 0);
     add_button(buttons, "设置页地址", BTN_CONFIG_URL);
+    if (s_cb.take_photo) add_button(buttons, "拍照", BTN_PHOTO);
     s_wifi_label = add_button(buttons, "重新配网", BTN_WIFI);
     add_button(buttons, "关于", BTN_ABOUT);
     add_button(buttons, "关闭", BTN_CLOSE);
@@ -298,6 +334,13 @@ static void build_menu(lv_obj_t *screen)
 static void on_face(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
+    static bool press_woke;  // 这一下是不是用来叫醒它的
+    if (code == LV_EVENT_PRESSED) {
+        press_woke = s_sleeping;
+        if (s_cb.user_activity) s_cb.user_activity();  // 设备上会同步退出休眠
+        return;
+    }
+    if (press_woke) return;
     if (code == LV_EVENT_SHORT_CLICKED) {
         if (s_cb.toggle_chat) s_cb.toggle_chat();
     } else if (code == LV_EVENT_LONG_PRESSED) {
@@ -323,11 +366,17 @@ void nomi_ui_create(lv_obj_t *screen, uint16_t *face_buf, const lv_font_t *font,
     lv_obj_add_flag(s_canvas, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(s_canvas, on_face, LV_EVENT_SHORT_CLICKED, NULL);
     lv_obj_add_event_cb(s_canvas, on_face, LV_EVENT_LONG_PRESSED, NULL);
+    lv_obj_add_event_cb(s_canvas, on_face, LV_EVENT_PRESSED, NULL);
 
     s_status = lv_label_create(screen);
     set_text_style(s_status, C_MUTED);
     lv_obj_align(s_status, LV_ALIGN_TOP_MID, 0, 8);
     lv_label_set_text(s_status, "");
+
+    s_battery = lv_label_create(screen);
+    lv_obj_set_style_text_font(s_battery, &lv_font_montserrat_14, 0);
+    lv_obj_align(s_battery, LV_ALIGN_TOP_RIGHT, -12, 10);
+    lv_obj_add_flag(s_battery, LV_OBJ_FLAG_HIDDEN);
 
     s_subtitle = lv_label_create(screen);
     set_text_style(s_subtitle, C_TEXT);

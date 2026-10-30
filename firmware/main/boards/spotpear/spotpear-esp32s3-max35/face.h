@@ -33,6 +33,9 @@ const char *face_mode_name(face_mode_t mode);
 // 说话音量 0..1，由音频播放驱动；传负数表示没有真实音量，说话时用模拟音量
 void face_set_level(float level);
 
+// 睡着：闭眼、收手、缓慢呼吸，盖过当前状态；醒来后回到原状态
+void face_set_sleep(int sleeping);
+
 // 按固定步长推进动画，建议 dt = 1/60 秒
 void face_step(float dt);
 

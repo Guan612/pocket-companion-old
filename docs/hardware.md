@@ -28,6 +28,10 @@
 | I2C SCL / SDA | 14 / 15 | ES8311、GT911、摄像头 SCCB 共用 |
 | 触摸 INT / RST | 无 | INT 没接到 GPIO，只能轮询；RST 是 RC 上电复位 |
 | USB D- / D+ | 19 / 20 | 原生 USB，烧录和日志都走这里 |
+| 电池电压 | 6（ADC1_CH5） | V_BAT 经 100K/100K 分压 |
+| USB 插入检测 | 7 | USB 5V 经 20K/30K 分压，插着为高；充电芯片的 CHG 只接了指示灯 |
+| 摄像头 D0–D7 | 12 / 4 / 11 / 17 / 18 / 3 / 1 / 2 | OV2640 的 Y2–Y9 |
+| 摄像头 PCLK / VSYNC / HREF / XCLK | 38 / 39 / 40 / 41 | SCCB 复用 I2C 14/15，PWDN、RESET 板上固定 |
 | BOOT 键 | 0 | |
 
 注意：SpotPear 另一个仓库里的 `sp-esp32-s3-lcd-3.5` 小智配置（屏幕 CS=21、背光 5 等）是另一款板子，和这块对不上。

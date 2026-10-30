@@ -4,6 +4,7 @@
 
 #include "display/lcd_display.h"
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -20,6 +21,14 @@ public:
     void SetEmotion(const char* emotion) override;
     void SetChatMessage(const char* role, const char* content) override;
     bool SetTextFont(std::shared_ptr<LvglFont> text_font) override;
+    void UpdateStatusBar(bool update_all = false) override;
+    void SetPreviewImage(std::unique_ptr<LvglImage> image) override;
+
+    // 由板子的休眠计时器调用
+    void SetSleep(bool sleeping);
+    // 触摸时回调（板子用来重置休眠计时）；拍照入口，不设则菜单里不显示
+    static std::function<void()> on_user_activity;
+    static std::function<void()> on_take_photo;
 
 private:
     uint16_t* face_buf_ = nullptr;

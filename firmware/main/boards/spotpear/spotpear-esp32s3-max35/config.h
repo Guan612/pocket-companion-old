@@ -58,4 +58,34 @@
 #define TOUCH_MIRROR_X  false
 #define TOUCH_MIRROR_Y  true
 
+// 电池：V_BAT 经 100K/100K 分压到 GPIO6（ADC1_CH5）；USB 5V 经 20K/30K 分压到 GPIO7，
+// 插着 USB 时为高。充电芯片的 CHG 只接了指示灯，所以"充电中"用"插着 USB"近似
+#define BATTERY_ADC_UNIT        ADC_UNIT_1
+#define BATTERY_ADC_CHANNEL     ADC_CHANNEL_5
+#define BATTERY_UPPER_RESISTOR  100000
+#define BATTERY_LOWER_RESISTOR  100000
+#define BATTERY_USB_DETECT_PIN  GPIO_NUM_7
+
+// 休眠：空闲 60 秒调暗并闭眼，5 分钟息屏；唤醒词一直开着
+#define IDLE_SECONDS_TO_DIM     60
+#define IDLE_SECONDS_TO_OFF     300
+#define DIM_BRIGHTNESS          5
+
+// 摄像头（OV2640 / GC0308，DVP 8 位）。SCCB 复用上面的 I2C 总线；PWDN、RESET 板上已固定
+#define CAMERA_PIN_D0     GPIO_NUM_12
+#define CAMERA_PIN_D1     GPIO_NUM_4
+#define CAMERA_PIN_D2     GPIO_NUM_11
+#define CAMERA_PIN_D3     GPIO_NUM_17
+#define CAMERA_PIN_D4     GPIO_NUM_18
+#define CAMERA_PIN_D5     GPIO_NUM_3
+#define CAMERA_PIN_D6     GPIO_NUM_1
+#define CAMERA_PIN_D7     GPIO_NUM_2
+#define CAMERA_PIN_PCLK   GPIO_NUM_38
+#define CAMERA_PIN_VSYNC  GPIO_NUM_39
+#define CAMERA_PIN_HREF   GPIO_NUM_40
+#define CAMERA_PIN_XCLK   GPIO_NUM_41
+#define CAMERA_PIN_PWDN   GPIO_NUM_NC
+#define CAMERA_PIN_RESET  GPIO_NUM_NC
+#define CAMERA_XCLK_HZ    20000000
+
 #endif  // _BOARD_CONFIG_H_

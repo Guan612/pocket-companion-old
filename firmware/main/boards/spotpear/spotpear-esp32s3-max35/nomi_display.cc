@@ -71,6 +71,17 @@ const char* GetConfigUrl() {
 #endif
 }
 
+void UserActivity() {
+    if (NomiDisplay::on_user_activity) NomiDisplay::on_user_activity();
+}
+
+void TakePhoto() {
+    // 拍照会阻塞几百毫秒，放到主循环里做，别卡住 LVGL 任务
+    Application::GetInstance().Schedule([]() {
+        if (NomiDisplay::on_take_photo) NomiDisplay::on_take_photo();
+    });
+}
+
 const char* GetAbout() {
     static char about[96];
     snprintf(about, sizeof(about), "Pocket Companion %s", esp_app_get_description()->version);
@@ -78,6 +89,9 @@ const char* GetAbout() {
 }
 
 }  // namespace
+
+std::function<void()> NomiDisplay::on_user_activity;
+std::function<void()> NomiDisplay::on_take_photo;
 
 NomiDisplay::NomiDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
                          int width, int height, int offset_x, int offset_y, bool mirror_x,
@@ -116,6 +130,8 @@ void NomiDisplay::SetupUI() {
         .get_brightness = GetBrightness,
         .get_config_url = GetConfigUrl,
         .get_about = GetAbout,
+        .user_activity = UserActivity,
+        .take_photo = TakePhoto,
     };
     // 先用内置字体，资源分区里的完整中文字体加载后会经 SetTextFont 换上
     nomi_ui_create(screen, face_buf_, &BUILTIN_TEXT_FONT, &callbacks);
@@ -170,4 +186,30 @@ void NomiDisplay::SetChatMessage(const char* role, const char* content) {
         return;
     }
     nomi_ui_set_subtitle(role, content);
+}
+
+void NomiDisplay::UpdateStatusBar(bool update_all) {
+    SpiLcdDisplay::UpdateStatusBar(update_all);
+    if (!ui_ready_) return;
+    int level = -1;
+    bool charging = false, discharging = false;
+    if (!Board::GetInstance().GetBatteryLevel(level, charging, discharging)) {
+        level = -1;
+    }
+    DisplayLockGuard lock(this);
+    nomi_ui_set_battery(level, charging);
+}
+
+void NomiDisplay::SetPreviewImage(std::unique_ptr<LvglImage> image) {
+    SpiLcdDisplay::SetPreviewImage(std::move(image));
+    if (!ui_ready_ || preview_image_ == nullptr) return;
+    // 小智的预览图在我们的界面下面，提到最上层；它自己的定时器到时会再隐藏
+    DisplayLockGuard lock(this);
+    lv_obj_move_foreground(preview_image_);
+}
+
+void NomiDisplay::SetSleep(bool sleeping) {
+    if (!ui_ready_) return;
+    DisplayLockGuard lock(this);
+    nomi_ui_set_sleep(sleeping);
 }

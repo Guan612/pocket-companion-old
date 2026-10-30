@@ -33,6 +33,8 @@ typedef struct {
     int (*get_brightness)(void);
     const char *(*get_config_url)(void);  // 网页设置页地址，可能为空
     const char *(*get_about)(void);       // 关于页的文字
+    void (*user_activity)(void);          // 有触摸操作（用来重置休眠计时）
+    void (*take_photo)(void);             // 为 NULL 时菜单里不显示"拍照"
 } nomi_ui_callbacks_t;
 
 // face_buf：480×320 RGB565 画布缓冲，由调用方分配；font：中文字体
@@ -47,6 +49,11 @@ void nomi_ui_set_status(const char *status);
 void nomi_ui_set_subtitle(const char *role, const char *text);
 void nomi_ui_set_emotion(const char *emotion);
 void nomi_ui_notify(const char *text, uint32_t duration_ms);
+
+// 休眠：表情闭眼；休眠中点屏幕只唤醒，不触发对话
+void nomi_ui_set_sleep(bool sleeping);
+// 右上角电量；level < 0 表示没有电池信息，隐藏
+void nomi_ui_set_battery(int level, bool charging);
 
 #ifdef __cplusplus
 }

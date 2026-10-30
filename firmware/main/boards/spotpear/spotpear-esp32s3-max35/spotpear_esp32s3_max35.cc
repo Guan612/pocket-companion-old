@@ -1,9 +1,12 @@
+#include "adc_battery_monitor.h"
 #include "application.h"
 #include "button.h"
 #include "codecs/es8311_audio_codec.h"
 #include "config.h"
 #include "mcp_server.h"
+#include "esp32_camera.h"
 #include "nomi_display.h"
+#include "power_save_timer.h"
 #include "wifi_board.h"
 
 #include <driver/i2c_master.h>
@@ -22,6 +25,9 @@ private:
     Button boot_button_;
     i2c_master_bus_handle_t i2c_bus_ = nullptr;
     NomiDisplay* display_ = nullptr;
+    AdcBatteryMonitor* battery_ = nullptr;
+    PowerSaveTimer* power_save_timer_ = nullptr;
+    Esp32Camera* camera_ = nullptr;
 
     // ES8311、GT911、摄像头 SCCB 共用这条总线
     void InitializeI2c() {
@@ -126,8 +132,74 @@ private:
         ESP_LOGI(TAG, "GT911 touch ready at 0x%02X", addr);
     }
 
+    void InitializeBattery() {
+        battery_ = new AdcBatteryMonitor(BATTERY_ADC_UNIT, BATTERY_ADC_CHANNEL, BATTERY_UPPER_RESISTOR,
+                                         BATTERY_LOWER_RESISTOR, BATTERY_USB_DETECT_PIN);
+        // 插拔 USB 时立刻刷新电量显示，并重置休眠计时
+        battery_->OnChargingStatusChanged([this](bool charging) {
+            power_save_timer_->WakeUp();
+            display_->UpdateStatusBar(true);
+        });
+    }
+
+    // cpu_max_freq 传 -1：休眠时不降频，唤醒词保持监听
+    void InitializePowerSave() {
+        power_save_timer_ = new PowerSaveTimer(-1, IDLE_SECONDS_TO_DIM, IDLE_SECONDS_TO_OFF);
+        power_save_timer_->OnEnterSleepMode([this]() {
+            display_->SetSleep(true);
+            GetBacklight()->SetBrightness(DIM_BRIGHTNESS);
+        });
+        power_save_timer_->OnExitSleepMode([this]() {
+            display_->SetSleep(false);
+            GetBacklight()->RestoreBrightness();
+        });
+        // 到点只息屏，不真关机（这块板没有软关机电路）
+        power_save_timer_->OnShutdownRequest([this]() { GetBacklight()->SetBrightness(0); });
+        power_save_timer_->SetEnabled(true);
+        NomiDisplay::on_user_activity = [this]() { power_save_timer_->WakeUp(); };
+    }
+
+    void InitializeCamera() {
+        camera_config_t config = {};
+        config.pin_pwdn = CAMERA_PIN_PWDN;
+        config.pin_reset = CAMERA_PIN_RESET;
+        config.pin_xclk = CAMERA_PIN_XCLK;
+        config.pin_sccb_sda = -1;  // 复用已初始化的 I2C 总线
+        config.pin_sccb_scl = -1;
+        config.sccb_i2c_port = I2C_NUM_0;
+        config.pin_d7 = CAMERA_PIN_D7;
+        config.pin_d6 = CAMERA_PIN_D6;
+        config.pin_d5 = CAMERA_PIN_D5;
+        config.pin_d4 = CAMERA_PIN_D4;
+        config.pin_d3 = CAMERA_PIN_D3;
+        config.pin_d2 = CAMERA_PIN_D2;
+        config.pin_d1 = CAMERA_PIN_D1;
+        config.pin_d0 = CAMERA_PIN_D0;
+        config.pin_vsync = CAMERA_PIN_VSYNC;
+        config.pin_href = CAMERA_PIN_HREF;
+        config.pin_pclk = CAMERA_PIN_PCLK;
+        config.xclk_freq_hz = CAMERA_XCLK_HZ;
+        config.ledc_timer = LEDC_TIMER_1;  // 0 号被背光 PWM 占了
+        config.ledc_channel = LEDC_CHANNEL_1;
+        config.pixel_format = PIXFORMAT_RGB565;
+        config.frame_size = FRAMESIZE_QVGA;
+        config.jpeg_quality = 12;
+        config.fb_count = 1;
+        config.fb_location = CAMERA_FB_IN_PSRAM;
+        config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
+        camera_ = new Esp32Camera(config);
+
+        NomiDisplay::on_take_photo = [this]() {
+            power_save_timer_->WakeUp();
+            if (!camera_->Capture()) {
+                display_->ShowNotification("拍照失败，检查摄像头排线", 4000);
+            }
+        };
+    }
+
     void InitializeButtons() {
         boot_button_.OnClick([this]() {
+            power_save_timer_->WakeUp();
             auto& app = Application::GetInstance();
             if (app.GetDeviceState() == kDeviceStateStarting) {
                 EnterWifiConfigMode();
@@ -154,6 +226,9 @@ public:
         InitializeSpi();
         InitializeDisplay();
         InitializeTouch();
+        InitializePowerSave();
+        InitializeBattery();
+        InitializeCamera();
         InitializeButtons();
         InitializeTools();
         GetBacklight()->RestoreBrightness();
@@ -168,6 +243,23 @@ public:
     }
 
     virtual Display* GetDisplay() override { return display_; }
+
+    virtual Camera* GetCamera() override { return camera_; }
+
+    virtual bool GetBatteryLevel(int& level, bool& charging, bool& discharging) override {
+        charging = battery_->IsCharging();
+        discharging = !charging;
+        level = battery_->GetBatteryLevel();
+        return true;
+    }
+
+    // 进入对话等高功耗状态时说明有人在用，重置休眠计时
+    virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
+        if (level != PowerSaveLevel::LOW_POWER) {
+            power_save_timer_->WakeUp();
+        }
+        WifiBoard::SetPowerSaveLevel(level);
+    }
 
     virtual Backlight* GetBacklight() override {
         static PwmBacklight backlight(DISPLAY_BACKLIGHT_PIN, DISPLAY_BACKLIGHT_OUTPUT_INVERT);

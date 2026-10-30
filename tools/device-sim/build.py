@@ -19,7 +19,7 @@ BOARD = FIRMWARE / "main" / "boards" / "spotpear" / "spotpear-esp32s3-max35"
 EXPORTS = [
     "sim_init", "sim_frame", "sim_clear_dirty", "sim_lcd",
     "sim_dirty_x0", "sim_dirty_y0", "sim_dirty_x1", "sim_dirty_y1",
-    "sim_font_buffer", "sim_brightness", "sim_volume", "sim_boot_button", "sim_pointer",
+    "sim_font_buffer", "sim_brightness", "sim_volume", "sim_boot_button", "sim_pointer", "sim_force_sleep",
 ]
 
 

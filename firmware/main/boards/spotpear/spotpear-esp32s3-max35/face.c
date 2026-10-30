@@ -26,6 +26,7 @@ static face_mode_t s_mode = FACE_IDLE;
 static uint32_t s_rng;
 static rrect_t s_prev;
 static int s_first = 1;
+static int s_sleep;
 
 static spring_t spring(float x, float k, float d) { return (spring_t){x, 0, x, k, d}; }
 
@@ -80,6 +81,8 @@ const char *face_mode_name(face_mode_t mode)
 }
 
 void face_set_level(float level) { s_level = level; }
+
+void face_set_sleep(int sleeping) { s_sleep = sleeping; }
 
 static float speech_level(void)
 {
@@ -140,6 +143,14 @@ void face_step(float dt)
 
     s_bob = sinf(s_time * 1.7f) * 1.5f - (m == FACE_LISTEN ? 2 : 0);
     if (m == FACE_HAPPY) s_bob -= fabsf(sinf(s_mode_time * 9)) * 7 * expf(-s_mode_time * 1.2f);
+
+    if (s_sleep) {
+        P.open.t = 0.02f;
+        P.gx.t = P.gy.t = P.mouth.t = P.tilt.t = 0;
+        P.hl.t = P.hr.t = P.smile.t = P.happy.t = P.blush.t = 0;
+        P.wide.t = 1;
+        s_bob = sinf(s_time * 0.8f) * 2.5f + 3;  // 慢呼吸，整张脸略微下沉
+    }
 
     spring_t *all[] = {&P.open, &P.gx, &P.gy, &P.mouth, &P.wide, &P.tilt,
                        &P.hl,   &P.hr, &P.smile, &P.happy, &P.blush};

@@ -30,6 +30,28 @@ static phase_t s_phase = PHASE_IDLE;
 static uint32_t s_phase_at;
 static int s_volume = 70, s_brightness = 80;
 
+// 休眠：和设备一样空闲 60 秒闭眼调暗，5 分钟息屏
+#define IDLE_TO_DIM_MS 60000
+#define IDLE_TO_OFF_MS 300000
+#define DIM_BRIGHTNESS 5
+static uint32_t s_last_activity;
+static int s_sleep_level;  // 0 醒着，1 调暗，2 息屏
+
+static void wake(void)
+{
+    s_last_activity = s_ms;
+    if (s_sleep_level) {
+        s_sleep_level = 0;
+        nomi_ui_set_sleep(false);
+    }
+}
+
+static void sleep_now(void)
+{
+    s_sleep_level = 1;
+    nomi_ui_set_sleep(true);
+}
+
 static void enter(phase_t phase)
 {
     s_phase = phase;
@@ -64,6 +86,13 @@ static void enter(phase_t phase)
 
 static void advance(void)
 {
+    if (s_phase != PHASE_IDLE) {
+        s_last_activity = s_ms;  // 对话中不算空闲
+    } else if (s_sleep_level == 0 && s_ms - s_last_activity > IDLE_TO_DIM_MS) {
+        sleep_now();
+    } else if (s_sleep_level == 1 && s_ms - s_last_activity > IDLE_TO_OFF_MS) {
+        s_sleep_level = 2;
+    }
     uint32_t t = s_ms - s_phase_at;
     if (s_phase == PHASE_LISTEN && t > 4000) enter(PHASE_THINK);
     else if (s_phase == PHASE_THINK && t > 1500) enter(PHASE_SAY1);
@@ -87,6 +116,7 @@ static nomi_state_t get_state(void)
 // 和小智的 ToggleChatState 对应：待机→聆听，聆听→结束说话，说话中→打断
 static void toggle_chat(void)
 {
+    wake();
     if (s_phase == PHASE_IDLE || s_phase == PHASE_DONE) enter(PHASE_LISTEN);
     else if (s_phase == PHASE_LISTEN) enter(PHASE_THINK);
     else enter(PHASE_IDLE);
@@ -99,6 +129,7 @@ static int get_brightness(void) { return s_brightness; }
 static void reconfigure_wifi(void) { nomi_ui_notify("（模拟）设备重启进入配网模式", 4000); }
 static const char *get_config_url(void) { return "http://192.168.1.88/"; }
 static const char *get_about(void) { return "Pocket Companion · 模拟器（LVGL 9.5）"; }
+static void take_photo(void) { nomi_ui_notify("（模拟）拍照，真机上会在屏幕上显示照片", 3000); }
 
 /* ---------- LVGL 驱动 ---------- */
 
@@ -161,12 +192,16 @@ void sim_init(uint32_t ms)
         .get_brightness = get_brightness,
         .get_config_url = get_config_url,
         .get_about = get_about,
+        .user_activity = wake,
+        .take_photo = take_photo,
     };
     // 没拿到小智字体时退回 LVGL 自带的中文子集（缺字较多）
     const lv_font_t *font = s_font_bin ? cbin_font_create(s_font_bin) : NULL;
     nomi_ui_create(lv_screen_active(), s_face, font ? font : &lv_font_source_han_sans_sc_16_cjk,
                    &callbacks);
     enter(PHASE_IDLE);
+    nomi_ui_set_battery(76, false);  // 假电量
+    s_last_activity = ms;
 }
 
 // 推进到 ms 时刻跑一次 LVGL；返回本次刷到"屏幕"的面积
@@ -190,7 +225,11 @@ int sim_dirty_x0(void) { return s_dx0; }
 int sim_dirty_y0(void) { return s_dy0; }
 int sim_dirty_x1(void) { return s_dx1; }
 int sim_dirty_y1(void) { return s_dy1; }
-int sim_brightness(void) { return s_brightness; }
+int sim_brightness(void)
+{
+    return s_sleep_level == 2 ? 0 : s_sleep_level == 1 ? DIM_BRIGHTNESS : s_brightness;
+}
+void sim_force_sleep(void) { sleep_now(); }
 int sim_volume(void) { return s_volume; }
 void sim_boot_button(void) { toggle_chat(); }
 
