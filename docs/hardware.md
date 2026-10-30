@@ -15,7 +15,7 @@
 
 ## 引脚
 
-全部来自原理图，代码里的定义在 [`firmware/main/board_pins.h`](../firmware/main/board_pins.h)。
+全部来自原理图，代码里的定义在 [`config.h`](../firmware/main/boards/spotpear/spotpear-esp32s3-max35/config.h)。
 
 | 功能 | GPIO | 备注 |
 |---|---|---|

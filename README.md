@@ -1,103 +1,87 @@
 # Pocket Companion
 
-一个放在桌上的语音小伙伴：按住说话，它用一张方形 Nomi 风格的脸回应你。
+一个放在桌上的语音小伙伴：说话唤醒或按键，它用一张方形 Nomi 风格的脸回应你。设备直接调用 OpenAI 兼容的 API，中间不需要任何服务器。
 
 ![六个表情状态](docs/face-states.png)
 
-从左到右、从上到下依次是：待机、聆听、思考、说话、开心、疑惑。这张图是 `firmware/main/face.c` 在电脑上直接渲染出来的，和设备上画的是同一份代码。
+从左到右、从上到下依次是：待机、聆听、思考、说话、开心、疑惑。这张图是固件里的 `face.c` 在电脑上直接渲染出来的。
 
 ## 架构
 
 ```text
-┌─────────── 设备（ESP32-S3） ───────────┐        ┌──────────── 代理（电脑 / 小服务器） ────────────┐
-│ 按键录音 → 16k PCM ───────────────────┼─ WS ──▶│ ASR（OpenAI 兼容 /audio/transcriptions）       │
-│                                        │        │   → LLM（/chat/completions，回答带情绪标签）     │
-│ 表情状态机 ◀── state / emotion ────────┼◀─ WS ──│   → edge-tts → ffmpeg 转 16k PCM               │
-│ I2S 播放   ◀── PCM ────────────────────┼◀─ WS ──│                                                 │
-└────────────────────────────────────────┘        └─────────────────────────────────────────────────┘
+┌──────────────────────── 设备（ESP32-S3） ────────────────────────┐
+│ 小智固件：唤醒词 / 回声消除 / VAD / 配网 / 屏幕 / 触摸            │
+│                                                                  │
+│ 录音 ──▶ DirectApiProtocol ──HTTPS──▶ /audio/transcriptions      │
+│                │            ──HTTPS──▶ /chat/completions         │
+│                │            ──HTTPS──▶ /audio/speech（Ogg Opus） │
+│                ▼                                                 │
+│ NomiDisplay（表情跟随设备状态和 LLM 情绪）  ◀── 播放              │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-设备只负责录音、播放和画脸，ASR、LLM、TTS 都放在代理里。这样密钥不进固件，换哪家服务也只改代理。协议见 [docs/protocol.md](docs/protocol.md)。
-
-## 目录
-
-| 路径 | 内容 |
-|---|---|
-| `firmware/` | ESP-IDF 工程。`main/face.c` 表情，`main/raster.c` 软件光栅，`main/display.c` 屏幕驱动 |
-| `firmware/host/` | 在电脑上编译表情代码、渲染成图片的小工具 |
-| `server/` | 代理服务和模拟设备脚本 |
-| `preview/` | 浏览器里的表情预览，调外观用 |
-| `docs/` | 硬件引脚、通信协议 |
+- 固件底座是 [小智 xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) v2.5.2，以 git subtree 放在 `firmware/`。
+- 我们加的代码：
+  - 板子适配和表情：`firmware/main/boards/spotpear/spotpear-esp32s3-max35/`
+  - 直连 API 协议和网页设置页：`firmware/main/protocols/direct_api_*`
+  - 启动流程里的开关：`firmware/main/application.cc` 中的 `CONFIG_DIRECT_API`
+- 打开 `DIRECT_API`（这块板默认打开）后，设备不连小智服务器，不激活，也不会被官方 OTA 覆盖。
 
 ## 硬件
 
 SpotPear ESP32-S3 3.5 寸 AI 板（ESP32-S3R8，8MB PSRAM，480×320 ST7796S，ES8311 + NS4150B，GT911 触摸）。引脚和注意事项见 [docs/hardware.md](docs/hardware.md)。
 
-## 快速开始
+## 使用
 
-### 浏览器预览
+1. 烧录固件后，按小智的流程配网：手机连设备热点，在网页里填 Wi-Fi。
+2. 设备连上网后，屏幕会显示设置页地址。用同一局域网的浏览器打开 `http://设备IP/`。
+3. 填大模型的地址、Key、模型。语音识别和语音合成的地址、Key 留空时沿用大模型的，模型和音色按服务商填写。
+4. 说唤醒词或按 BOOT 键开始对话。
 
-直接打开 `preview/nomi-square.html`，按 1–6 切换状态。
+所有接口都是 OpenAI 兼容格式。语音合成必须支持 `response_format: "opus"`。
 
-### 代理
+## 编译
 
-需要 Python 3.10+ 和 ffmpeg。
+需要 ESP-IDF v6.1（小智 2.5 已不支持 5.x）。
 
-```bash
-cd server
-pip install -r requirements.txt
-cp .env.example .env        # 填 ASR / LLM 的地址和 key
-python companion_server.py  # 监听 ws://0.0.0.0:8765/ws
-```
-
-不填 key 也能先测协议：`MOCK=1` 会跳过 ASR 和 LLM，只走真实的 edge-tts。
-
-```bash
-MOCK=1 python companion_server.py
-python fake_device.py --text "你好"          # 另开一个终端
-```
-
-### 固件
-
-需要 ESP-IDF 5.3 或更新版本。
-
-```bash
+```powershell
+. C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1
 cd firmware
-idf.py set-target esp32s3
-idf.py build flash monitor
+python scripts/build.py spotpear/spotpear-esp32s3-max35 --language zh-CN
+idf.py -p COMx flash monitor
 ```
 
-### 设备模拟器（浏览器里跑固件的表情代码）
+## 表情模拟器
 
-把 `face.c` 和 `raster.c` 编译成 WebAssembly，在浏览器里实时运行，和板子上是同一份代码：
+在浏览器里实时运行固件的表情代码：
 
 ```bash
-cd firmware
-python -m ziglang cc -target wasm32-wasi -mexec-model=reactor -O2 -Imain \
-  $(for f in fb w h init set_mode get_mode set_level step render dirty_x0 dirty_y0 dirty_x1 dirty_y1; do printf -- '-Wl,--export=sim_%s ' $f; done) \
-  host/sim/sim_exports.c main/face.c main/raster.c -o host/sim/face.wasm
-cd host/sim && python -m http.server 8800
+cd tools/face-sim
+pip install ziglang
+python build.py
+python -m http.server 8800    # 打开 http://127.0.0.1:8800/sim.html
 ```
 
-然后打开 http://127.0.0.1:8800/sim.html，按 1–6 或空格切换表情。
+`python build.py --frames` 会把六个状态各渲染一张截图到 `tools/face-sim/out/`。
 
-### 在电脑上渲染表情
+## 同步小智上游
 
 ```bash
-cd firmware
-python -m ziglang cc -std=c11 -O2 -Imain host/render_frames.c main/face.c main/raster.c -o render
-./render host/out   # 每个状态输出一张 PPM
+git subtree pull --prefix=firmware https://github.com/78/xiaozhi-esp32.git <tag> --squash
 ```
+
+可能冲突的地方只有 `firmware/main/CMakeLists.txt`、`Kconfig.projbuild` 和 `application.cc` 里我们加的几段。
 
 ## 进度
 
-- [x] 方形 Nomi 表情：六个状态、弹簧动画、局部刷新（电脑上渲染验证过，平均每帧只刷约 18% 的屏幕）
-- [x] 屏幕驱动、BOOT 键切换表情（引脚按原理图核对过；**固件还没在 ESP-IDF 下编译过，也没上机**）
-- [x] 代理服务：ASR → LLM → edge-tts，WebSocket 协议（MOCK 模式在本机跑通）
-- [ ] 设备端音频：ES8311 初始化、按键录音、WebSocket 客户端、I2S 播放
-- [ ] 触摸（GT911 轮询）
+- [x] 方形 Nomi 表情、板子适配、直连 API、网页设置页（ESP-IDF v6.1 编译通过）
+- [ ] 上机验证：屏幕方向和颜色、触摸坐标、音频
+- [ ] 摄像头识图（拍照后交给多模态 LLM）
 - [ ] 本地工具：红外 / 继电器
 
 ## 致谢
 
-本仓库最初由 [FoloToy/ai-passport](https://github.com/FoloToy/ai-passport) 复制而来，现已改为面向另一块硬件的独立项目，原有代码已全部替换。许可证见 [LICENSE](LICENSE)。
+- 固件底座：[78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)（MIT）
+- 本仓库最初由 [FoloToy/ai-passport](https://github.com/FoloToy/ai-passport) 复制而来，原有代码已全部替换。
+
+许可证见 [LICENSE](LICENSE)。

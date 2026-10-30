@@ -1,19 +1,3 @@
-# ESP-IDF
-firmware/build/
-firmware/managed_components/
-firmware/sdkconfig
-firmware/sdkconfig.old
-firmware/dependencies.lock
-
-# 电脑上的渲染测试
-firmware/host/out/
-*.exe
-*.pdb
-*.ppm
-*.wasm
-
-# 代理服务
-server/.env
-server/*.wav
-__pycache__/
-.venv/
+# 表情模拟器的构建产物（firmware/ 有小智自带的 .gitignore）
+tools/face-sim/face.wasm
+tools/face-sim/out/
