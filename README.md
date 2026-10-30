@@ -67,6 +67,20 @@ idf.py set-target esp32s3
 idf.py build flash monitor
 ```
 
+### 设备模拟器（浏览器里跑固件的表情代码）
+
+把 `face.c` 和 `raster.c` 编译成 WebAssembly，在浏览器里实时运行，和板子上是同一份代码：
+
+```bash
+cd firmware
+python -m ziglang cc -target wasm32-wasi -mexec-model=reactor -O2 -Imain \
+  $(for f in fb w h init set_mode get_mode set_level step render dirty_x0 dirty_y0 dirty_x1 dirty_y1; do printf -- '-Wl,--export=sim_%s ' $f; done) \
+  host/sim/sim_exports.c main/face.c main/raster.c -o host/sim/face.wasm
+cd host/sim && python -m http.server 8800
+```
+
+然后打开 http://127.0.0.1:8800/sim.html，按 1–6 或空格切换表情。
+
 ### 在电脑上渲染表情
 
 ```bash
