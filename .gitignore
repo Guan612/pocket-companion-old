@@ -1,13 +1,18 @@
-build/
-sdkconfig
-sdkconfig.old
-managed_components/
-.vscode/
-.idea/
+# ESP-IDF
+firmware/build/
+firmware/managed_components/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/dependencies.lock
 
-# Generated repository-local links; canonical skill sources live in skills/.
-/.agents/skills/passport-develop
-/.agents/skills/passport-setup
-/.agents/skills/passport-build
-/.agents/skills/passport-device-test
-/.agents/skills/passport-debug
+# 电脑上的渲染测试
+firmware/host/out/
+*.exe
+*.pdb
+*.ppm
+
+# 代理服务
+server/.env
+server/*.wav
+__pycache__/
+.venv/
