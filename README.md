@@ -22,7 +22,7 @@
 
 - 固件底座是 [小智 xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) v2.5.2，以 git subtree 放在 `firmware/`。
 - 我们加的代码：
-  - 板子适配和表情：`firmware/main/boards/spotpear/spotpear-esp32s3-max35/`
+  - 板子适配、表情和界面：`firmware/main/boards/spotpear/spotpear-esp32s3-max35/`（`nomi_ui.c` 和模拟器共用）
   - 直连 API 协议和网页设置页：`firmware/main/protocols/direct_api_*`
   - 启动流程里的开关：`firmware/main/application.cc` 中的 `CONFIG_DIRECT_API`
 - 打开 `DIRECT_API`（这块板默认打开）后，设备不连小智服务器，不激活，也不会被官方 OTA 覆盖。
@@ -51,18 +51,35 @@ python scripts/build.py spotpear/spotpear-esp32s3-max35 --language zh-CN
 idf.py -p COMx flash monitor
 ```
 
-## 表情模拟器
+## 模拟器
 
-在浏览器里实时运行固件的表情代码：
+### 设备模拟器（整机交互）
+
+在浏览器里运行设备上同一份界面代码（`nomi_ui.c` + `face.c`，LVGL 9.5，小智的中文字体），鼠标当触摸：
+
+- 点一下屏幕开始说话，再点一下结束；说话中点一下打断
+- 长按屏幕打开设置菜单：音量、亮度、设置页地址、重新配网、关于
+- 右侧圆钮或空格键是 BOOT 键
+
+对话内容是模拟的，真正的 API 调用只在设备上跑。
+
+```bash
+# 先编译过一次固件（需要 managed_components 里的 LVGL 和小智字体）
+cd tools/device-sim
+pip install ziglang
+python build.py
+python -m http.server 8801    # 打开 http://127.0.0.1:8801/sim.html
+```
+
+### 表情模拟器
+
+只看表情动画，不依赖固件编译：
 
 ```bash
 cd tools/face-sim
-pip install ziglang
-python build.py
+python build.py               # --frames 另外渲染六个状态的截图到 out/
 python -m http.server 8800    # 打开 http://127.0.0.1:8800/sim.html
 ```
-
-`python build.py --frames` 会把六个状态各渲染一张截图到 `tools/face-sim/out/`。
 
 ## 同步小智上游
 
@@ -75,8 +92,9 @@ git subtree pull --prefix=firmware https://github.com/78/xiaozhi-esp32.git <tag>
 ## 进度
 
 - [x] 方形 Nomi 表情、板子适配、直连 API、网页设置页（ESP-IDF v6.1 编译通过）
+- [x] 触摸交互：点击开始/结束对话，长按设置菜单（浏览器模拟器可试）
 - [ ] 上机验证：屏幕方向和颜色、触摸坐标、音频
-- [ ] 摄像头识图（拍照后交给多模态 LLM）
+- [ ] 大模型工具调用：语音调音量/亮度、拍照识图
 - [ ] 本地工具：红外 / 继电器
 
 ## 致谢

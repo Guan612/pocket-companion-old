@@ -1,9 +1,11 @@
-// Nomi 风格表情显示：在小智的 LCD 界面底下铺一张全屏画布画脸，
-// 保留小智自带的状态栏和字幕，表情由设备状态和 LLM 情绪共同决定。
+// Nomi 显示：用 nomi_ui（和浏览器模拟器同一份界面代码）替换小智自带的界面。
+// 小智的界面照常创建但整体隐藏，它调的 SetStatus / SetChatMessage / SetEmotion 等转给 nomi_ui。
 #pragma once
 
 #include "display/lcd_display.h"
-#include "face.h"
+
+#include <memory>
+#include <string>
 
 class NomiDisplay : public SpiLcdDisplay {
 public:
@@ -12,19 +14,14 @@ public:
                 bool swap_xy);
 
     void SetupUI() override;
+    void SetStatus(const char* status) override;
+    void ShowNotification(const char* notification, int duration_ms = 3000) override;
+    void ShowNotification(const std::string& notification, int duration_ms = 3000) override;
     void SetEmotion(const char* emotion) override;
-    void SetTheme(Theme* theme) override;
+    void SetChatMessage(const char* role, const char* content) override;
+    bool SetTextFont(std::shared_ptr<LvglFont> text_font) override;
 
 private:
-    lv_obj_t* canvas_ = nullptr;
     uint16_t* face_buf_ = nullptr;
-    uint32_t last_ms_ = 0;
-    float acc_ = 0;
-    face_mode_t emotion_mode_ = FACE_IDLE;
-    uint32_t emotion_until_ = 0;
-
-    static void OnTick(lv_timer_t* timer);
-    void Tick();
-    face_mode_t PickMode(uint32_t now) const;
-    void MakeChromeTransparent();
+    bool ui_ready_ = false;
 };

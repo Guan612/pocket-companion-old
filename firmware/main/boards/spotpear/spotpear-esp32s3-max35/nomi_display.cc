@@ -1,35 +1,80 @@
 #include "nomi_display.h"
 
 #include "application.h"
+#include "board.h"
+#include "display/lvgl_display/lvgl_font.h"
 #include "display/lvgl_display/lvgl_theme.h"
+#include "nomi_ui.h"
+#include "settings.h"
+#include "wifi_board.h"
+#if CONFIG_DIRECT_API
+#include "direct_api_config_server.h"
+#endif
 
+#include <esp_app_desc.h>
 #include <esp_heap_caps.h>
 #include <esp_log.h>
-#include <esp_random.h>
 
+#include <cstdio>
 #include <cstring>
 
 #define TAG "NomiDisplay"
 
+LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
+
 namespace {
 
-constexpr uint32_t kFrameMs = 33;
-constexpr float kStepS = 1.0f / 60;
-constexpr uint32_t kEmotionHoldMs = 4000;  // LLM 给的情绪保持多久
+// 以下回调在 LVGL 任务里被 nomi_ui 调用
 
-face_mode_t ModeForEmotion(const char* emotion) {
-    static const char* const kHappy[] = {"happy",   "laughing", "funny", "loving",
-                                         "winking", "cool",     "relaxed", "delicious",
-                                         "kissy",   "confident", "silly"};
-    static const char* const kConfused[] = {"confused", "embarrassed", "surprised", "shocked"};
-    for (auto e : kHappy) {
-        if (strcmp(emotion, e) == 0) return FACE_HAPPY;
+nomi_state_t GetState() {
+    switch (Application::GetInstance().GetDeviceState()) {
+        case kDeviceStateListening: return NOMI_STATE_LISTENING;
+        case kDeviceStateSpeaking: return NOMI_STATE_SPEAKING;
+        case kDeviceStateConnecting:
+        case kDeviceStateActivating:
+        case kDeviceStateUpgrading: return NOMI_STATE_CONNECTING;
+        case kDeviceStateFatalError: return NOMI_STATE_ERROR;
+        default: return NOMI_STATE_IDLE;
     }
-    for (auto e : kConfused) {
-        if (strcmp(emotion, e) == 0) return FACE_CONFUSED;
+}
+
+void ToggleChat() { Application::GetInstance().ToggleChatState(); }
+
+void SetVolume(int volume, bool final) {
+    // SetOutputVolume 每次都写 NVS，拖动中不调，松手再设
+    if (final) Board::GetInstance().GetAudioCodec()->SetOutputVolume(volume);
+}
+
+int GetVolume() { return Board::GetInstance().GetAudioCodec()->output_volume(); }
+
+void SetBrightness(int level, bool final) {
+    Board::GetInstance().GetBacklight()->SetBrightness(level, false);
+    if (final) {
+        // Backlight::SetBrightness 遇到相同的值会直接返回不存盘，所以松手时自己写
+        Settings settings("display", true);
+        settings.SetInt("brightness", level);
     }
-    if (strcmp(emotion, "thinking") == 0) return FACE_THINK;
-    return FACE_IDLE;
+}
+
+int GetBrightness() { return Board::GetInstance().GetBacklight()->brightness(); }
+
+void ReconfigureWifi() {
+    Application::GetInstance().Schedule(
+        []() { static_cast<WifiBoard&>(Board::GetInstance()).EnterWifiConfigMode(); });
+}
+
+const char* GetConfigUrl() {
+#if CONFIG_DIRECT_API
+    return DirectApiConfigServer::Url().c_str();
+#else
+    return "";
+#endif
+}
+
+const char* GetAbout() {
+    static char about[96];
+    snprintf(about, sizeof(about), "Pocket Companion %s", esp_app_get_description()->version);
+    return about;
 }
 
 }  // namespace
@@ -47,105 +92,82 @@ void NomiDisplay::SetupUI() {
     }
     SpiLcdDisplay::SetupUI();
 
-    // 黑脸配深色主题，状态栏和字幕才是浅色字
-    auto* dark = LvglThemeManager::GetInstance().GetTheme("dark");
-    if (dark != nullptr) {
-        SetTheme(dark);
-    }
-
     DisplayLockGuard lock(this);
-    face_buf_ = static_cast<uint16_t*>(
-        heap_caps_malloc(FACE_W * FACE_H * sizeof(uint16_t), MALLOC_CAP_SPIRAM));
+    face_buf_ = static_cast<uint16_t*>(heap_caps_malloc(width_ * height_ * sizeof(uint16_t),
+                                                        MALLOC_CAP_SPIRAM));
     if (face_buf_ == nullptr) {
-        ESP_LOGE(TAG, "Failed to allocate face buffer");
+        ESP_LOGE(TAG, "Failed to allocate face buffer, keep XiaoZhi UI");
         return;
     }
-    face_init(esp_random());
-    face_render(face_buf_);
 
-    canvas_ = lv_canvas_create(lv_screen_active());
-    lv_canvas_set_buffer(canvas_, face_buf_, FACE_W, FACE_H, LV_COLOR_FORMAT_RGB565);
-    lv_obj_set_pos(canvas_, 0, 0);
-    lv_obj_move_background(canvas_);
-    MakeChromeTransparent();
+    // 小智的界面对象照常存在（它的其他代码还会更新它们），只是全部隐藏
+    lv_obj_t* screen = lv_screen_active();
+    for (uint32_t i = 0; i < lv_obj_get_child_count(screen); i++) {
+        lv_obj_add_flag(lv_obj_get_child(screen, i), LV_OBJ_FLAG_HIDDEN);
+    }
 
-    last_ms_ = lv_tick_get();
-    lv_timer_create(OnTick, kFrameMs, this);
+    static const nomi_ui_callbacks_t callbacks = {
+        .get_state = GetState,
+        .toggle_chat = ToggleChat,
+        .set_volume = SetVolume,
+        .set_brightness = SetBrightness,
+        .reconfigure_wifi = ReconfigureWifi,
+        .get_volume = GetVolume,
+        .get_brightness = GetBrightness,
+        .get_config_url = GetConfigUrl,
+        .get_about = GetAbout,
+    };
+    // 先用内置字体，资源分区里的完整中文字体加载后会经 SetTextFont 换上
+    nomi_ui_create(screen, face_buf_, &BUILTIN_TEXT_FONT, &callbacks);
+    ui_ready_ = true;
 }
 
-void NomiDisplay::SetTheme(Theme* theme) {
-    SpiLcdDisplay::SetTheme(theme);
+bool NomiDisplay::SetTextFont(std::shared_ptr<LvglFont> text_font) {
+    bool ok = SpiLcdDisplay::SetTextFont(text_font);
+    if (ok && ui_ready_ && text_font && text_font->font()) {
+        DisplayLockGuard lock(this);
+        nomi_ui_set_font(text_font->font());
+    }
+    return ok;
+}
+
+void NomiDisplay::SetStatus(const char* status) {
+    SpiLcdDisplay::SetStatus(status);
+    if (!ui_ready_) return;
     DisplayLockGuard lock(this);
-    MakeChromeTransparent();
+    nomi_ui_set_status(status);
 }
 
-// 小智自带界面各层都有底色，去掉后脸才露得出来；表情图标位也不用了
-void NomiDisplay::MakeChromeTransparent() {
-    for (lv_obj_t* obj : {container_, content_, top_bar_, status_bar_, side_bar_, bottom_bar_}) {
-        if (obj != nullptr) {
-            lv_obj_set_style_bg_opa(obj, LV_OPA_TRANSP, 0);
-            lv_obj_set_style_border_width(obj, 0, 0);
-        }
+void NomiDisplay::ShowNotification(const char* notification, int duration_ms) {
+    if (!ui_ready_) {
+        SpiLcdDisplay::ShowNotification(notification, duration_ms);
+        return;
     }
-    if (emoji_box_ != nullptr) {
-        lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
-    }
+    DisplayLockGuard lock(this);
+    nomi_ui_notify(notification, duration_ms);
+}
+
+void NomiDisplay::ShowNotification(const std::string& notification, int duration_ms) {
+    ShowNotification(notification.c_str(), duration_ms);
 }
 
 void NomiDisplay::SetEmotion(const char* emotion) {
-    if (emotion == nullptr) {
+    if (!ui_ready_) {
+        SpiLcdDisplay::SetEmotion(emotion);
         return;
     }
     DisplayLockGuard lock(this);
-    emotion_mode_ = ModeForEmotion(emotion);
-    emotion_until_ = lv_tick_get() + kEmotionHoldMs;
+    nomi_ui_set_emotion(emotion);
 }
 
-// 说话最优先，其次是 LLM 刚给的情绪，再看是不是在听
-face_mode_t NomiDisplay::PickMode(uint32_t now) const {
-    auto state = Application::GetInstance().GetDeviceState();
-    if (state == kDeviceStateSpeaking) {
-        return FACE_SPEAK;
+void NomiDisplay::SetChatMessage(const char* role, const char* content) {
+    SpiLcdDisplay::SetChatMessage(role, content);
+    if (!ui_ready_) return;
+    DisplayLockGuard lock(this);
+    // 系统消息（请稍候、错误提示等）用通知条，字幕只留给对话
+    if (role != nullptr && strcmp(role, "system") == 0) {
+        if (content != nullptr && *content) nomi_ui_notify(content, 4000);
+        return;
     }
-    if (emotion_mode_ != FACE_IDLE && static_cast<int32_t>(emotion_until_ - now) > 0) {
-        return emotion_mode_;
-    }
-    switch (state) {
-        case kDeviceStateListening:
-            return FACE_LISTEN;
-        case kDeviceStateConnecting:
-        case kDeviceStateActivating:
-        case kDeviceStateUpgrading:
-            return FACE_THINK;
-        case kDeviceStateFatalError:
-            return FACE_CONFUSED;
-        default:
-            return FACE_IDLE;
-    }
-}
-
-void NomiDisplay::OnTick(lv_timer_t* timer) {
-    static_cast<NomiDisplay*>(lv_timer_get_user_data(timer))->Tick();
-}
-
-void NomiDisplay::Tick() {
-    uint32_t now = lv_tick_get();
-    float dt = (now - last_ms_) / 1000.0f;
-    last_ms_ = now;
-    acc_ += dt > 0.1f ? 0.1f : dt;  // 卡顿后别一次追太多步
-
-    face_mode_t mode = PickMode(now);
-    if (mode != face_get_mode()) {
-        face_set_mode(mode);
-    }
-    for (; acc_ >= kStepS; acc_ -= kStepS) {
-        face_step(kStepS);
-    }
-
-    // 表情直接画进画布缓冲，只通知 LVGL 重画变化的那块
-    rrect_t d = face_render(face_buf_);
-    if (!rrect_empty(d)) {
-        lv_area_t area = {d.x0, d.y0, d.x1 - 1, d.y1 - 1};
-        lv_obj_invalidate_area(canvas_, &area);
-    }
+    nomi_ui_set_subtitle(role, content);
 }

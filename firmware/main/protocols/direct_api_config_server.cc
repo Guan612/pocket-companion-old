@@ -43,6 +43,7 @@ const Field kTts[] = {
 };
 
 httpd_handle_t s_server = nullptr;
+std::string s_url;
 
 std::string HtmlEscape(const std::string& s) {
     std::string out;
@@ -207,9 +208,11 @@ std::string Start() {
         httpd_register_uri_handler(s_server, &save);
     }
     std::string ip = DeviceIp();
-    std::string url = ip.empty() ? "" : "http://" + ip + "/";
-    ESP_LOGI(TAG, "Config page: %s", url.c_str());
-    return url;
+    s_url = ip.empty() ? "" : "http://" + ip + "/";
+    ESP_LOGI(TAG, "Config page: %s", s_url.c_str());
+    return s_url;
 }
+
+const std::string& Url() { return s_url; }
 
 }  // namespace DirectApiConfigServer

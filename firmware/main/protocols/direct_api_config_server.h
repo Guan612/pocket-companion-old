@@ -10,6 +10,9 @@ namespace DirectApiConfigServer {
 // 启动设置页，返回访问地址（拿不到 IP 时为空）
 std::string Start();
 
+// 最近一次 Start() 得到的访问地址
+const std::string& Url();
+
 }  // namespace DirectApiConfigServer
 
 #endif  // DIRECT_API_CONFIG_SERVER_H
